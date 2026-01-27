@@ -751,8 +751,7 @@ export function Items() {
                     </td>
                     <td>
                       <button
-                        title="配置发货卡券"
-                        aria-label="配置发货卡券"
+                        onClick={() => handleToggleMultiQuantity(item)}
                         className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
                           item.multi_quantity_delivery
                             ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
