@@ -316,6 +316,23 @@ class DBManager:
             )
             ''')
 
+            # 创建商品发货配置表（商品级别的发货配置）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS item_delivery_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                card_id INTEGER NOT NULL,
+                auto_confirm BOOLEAN DEFAULT TRUE,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
+                UNIQUE(cookie_id, item_id)
+            )
+            ''')
+
             # 创建默认回复表（支持账号级别和商品级别）
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS default_replies (
@@ -4373,6 +4390,241 @@ class DBManager:
             except:
                 pass
             return success_count
+
+    # ==================== 商品发货配置管理方法 ====================
+
+    def save_item_delivery_config(self, cookie_id: str, item_id: str, card_id: int,
+                                  auto_confirm: bool = True, enabled: bool = True) -> bool:
+        """保存商品发货配置
+
+        Args:
+            cookie_id: 账号ID
+            item_id: 商品ID
+            card_id: 卡券ID
+            auto_confirm: 是否自动确认发货
+            enabled: 是否启用
+
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+
+                # 获取卡券的多规格配置
+                cursor.execute('SELECT is_multi_spec FROM cards WHERE id = ?', (card_id,))
+                card_row = cursor.fetchone()
+                if not card_row:
+                    logger.error(
+                        f"无法保存商品发货配置，卡券不存在: cookie_id={cookie_id}, item_id={item_id}, card_id={card_id}"
+                    )
+                    return False
+
+                card_is_multi_spec = bool(card_row[0])
+
+                # 检查配置是否已存在
+                cursor.execute(
+                    'SELECT id FROM item_delivery_config WHERE cookie_id = ? AND item_id = ?',
+                    (cookie_id, item_id)
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    # 更新现有配置
+                    self._execute_sql(
+                        cursor,
+                        '''UPDATE item_delivery_config
+                           SET card_id = ?, auto_confirm = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP
+                           WHERE cookie_id = ? AND item_id = ?''',
+                        (card_id, auto_confirm, enabled, cookie_id, item_id)
+                    )
+                else:
+                    # 插入新配置
+                    self._execute_sql(
+                        cursor,
+                        '''INSERT INTO item_delivery_config
+                           (cookie_id, item_id, card_id, auto_confirm, enabled, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+                        (cookie_id, item_id, card_id, auto_confirm, enabled)
+                    )
+
+                # 同步更新商品的多规格状态
+                self._execute_sql(
+                    cursor,
+                    'UPDATE item_info SET is_multi_spec = ?, updated_at = CURRENT_TIMESTAMP WHERE cookie_id = ? AND item_id = ?',
+                    (card_is_multi_spec, cookie_id, item_id)
+                )
+
+                self.conn.commit()
+                logger.info(f"保存商品发货配置成功: {cookie_id} - {item_id} -> 卡券{card_id}")
+                return True
+
+        except Exception as e:
+            logger.error(f"保存商品发货配置失败: {e}")
+            self.conn.rollback()
+            return False
+
+    def get_item_delivery_config(self, cookie_id: str, item_id: str) -> Optional[Dict]:
+        """获取商品发货配置
+
+        Args:
+            cookie_id: 账号ID
+            item_id: 商品ID
+
+        Returns:
+            Optional[Dict]: 发货配置信息，如果不存在返回None
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    '''SELECT idc.id, idc.cookie_id, idc.item_id, idc.card_id, idc.auto_confirm,
+                              idc.enabled, idc.created_at, idc.updated_at,
+                              c.name as card_name, c.type as card_type, c.is_multi_spec as card_is_multi_spec
+                       FROM item_delivery_config idc
+                       LEFT JOIN cards c ON idc.card_id = c.id
+                       WHERE idc.cookie_id = ? AND idc.item_id = ?''',
+                    (cookie_id, item_id)
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    return {
+                        'id': row[0],
+                        'cookie_id': row[1],
+                        'item_id': row[2],
+                        'card_id': row[3],
+                        'auto_confirm': bool(row[4]),
+                        'enabled': bool(row[5]),
+                        'created_at': row[6],
+                        'updated_at': row[7],
+                        'card_name': row[8],
+                        'card_type': row[9],
+                        'card_is_multi_spec': bool(row[10]) if row[10] is not None else False
+                    }
+                return None
+
+        except Exception as e:
+            logger.error(f"获取商品发货配置失败: {e}")
+            return None
+
+    def get_all_item_delivery_configs(self, cookie_id: str = None) -> List[Dict]:
+        """获取所有商品发货配置
+
+        Args:
+            cookie_id: 可选，指定账号ID则只返回该账号的配置
+
+        Returns:
+            List[Dict]: 发货配置列表
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+
+                if cookie_id:
+                    cursor.execute(
+                        '''SELECT idc.id, idc.cookie_id, idc.item_id, idc.card_id, idc.auto_confirm,
+                                  idc.enabled, idc.created_at, idc.updated_at,
+                                  c.name as card_name, c.type as card_type, c.is_multi_spec as card_is_multi_spec,
+                                  i.item_title
+                           FROM item_delivery_config idc
+                           LEFT JOIN cards c ON idc.card_id = c.id
+                           LEFT JOIN item_info i ON idc.cookie_id = i.cookie_id AND idc.item_id = i.item_id
+                           WHERE idc.cookie_id = ?
+                           ORDER BY idc.updated_at DESC''',
+                        (cookie_id,)
+                    )
+                else:
+                    cursor.execute(
+                        '''SELECT idc.id, idc.cookie_id, idc.item_id, idc.card_id, idc.auto_confirm,
+                                  idc.enabled, idc.created_at, idc.updated_at,
+                                  c.name as card_name, c.type as card_type, c.is_multi_spec as card_is_multi_spec,
+                                  i.item_title
+                           FROM item_delivery_config idc
+                           LEFT JOIN cards c ON idc.card_id = c.id
+                           LEFT JOIN item_info i ON idc.cookie_id = i.cookie_id AND idc.item_id = i.item_id
+                           ORDER BY idc.updated_at DESC'''
+                    )
+
+                configs = []
+                for row in cursor.fetchall():
+                    configs.append({
+                        'id': row[0],
+                        'cookie_id': row[1],
+                        'item_id': row[2],
+                        'card_id': row[3],
+                        'auto_confirm': bool(row[4]),
+                        'enabled': bool(row[5]),
+                        'created_at': row[6],
+                        'updated_at': row[7],
+                        'card_name': row[8],
+                        'card_type': row[9],
+                        'card_is_multi_spec': bool(row[10]) if row[10] is not None else False,
+                        'item_title': row[11]
+                    })
+
+                return configs
+
+        except Exception as e:
+            logger.error(f"获取所有商品发货配置失败: {e}")
+            return []
+
+    def delete_item_delivery_config(self, cookie_id: str, item_id: str) -> bool:
+        """删除商品发货配置
+
+        Args:
+            cookie_id: 账号ID
+            item_id: 商品ID
+
+        Returns:
+            bool: 是否删除成功
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    'DELETE FROM item_delivery_config WHERE cookie_id = ? AND item_id = ?',
+                    (cookie_id, item_id)
+                )
+                self.conn.commit()
+                logger.info(f"删除商品发货配置成功: {cookie_id} - {item_id}")
+                return True
+
+        except Exception as e:
+            logger.error(f"删除商品发货配置失败: {e}")
+            self.conn.rollback()
+            return False
+
+    def update_item_delivery_config_status(self, cookie_id: str, item_id: str, enabled: bool) -> bool:
+        """更新商品发货配置的启用状态
+
+        Args:
+            cookie_id: 账号ID
+            item_id: 商品ID
+            enabled: 是否启用
+
+        Returns:
+            bool: 是否更新成功
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    '''UPDATE item_delivery_config
+                       SET enabled = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE cookie_id = ? AND item_id = ?''',
+                    (enabled, cookie_id, item_id)
+                )
+                self.conn.commit()
+                logger.info(f"更新商品发货配置状态成功: {cookie_id} - {item_id} -> {enabled}")
+                return True
+
+        except Exception as e:
+            logger.error(f"更新商品发货配置状态失败: {e}")
+            self.conn.rollback()
+            return False
 
     # ==================== 用户设置管理方法 ====================
 

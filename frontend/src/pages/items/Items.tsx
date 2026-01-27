@@ -1,7 +1,23 @@
 import { useEffect, useState, useRef } from 'react'
-import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X, MessageSquare, ImagePlus } from 'lucide-react'
-import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, getItemDefaultReply, saveItemDefaultReply, deleteItemDefaultReply, batchSaveItemDefaultReply, batchDeleteItemDefaultReply, uploadItemDefaultReplyImage } from '@/api/items'
+import {
+  CheckSquare,
+  Download,
+  Edit2,
+  ExternalLink,
+  Loader2,
+  Package,
+  RefreshCw,
+  Search,
+  Square,
+  Trash2,
+  X,
+  MessageSquare,
+  ImagePlus,
+  Settings,
+} from 'lucide-react'
+import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, getItemDefaultReply, saveItemDefaultReply, deleteItemDefaultReply, batchSaveItemDefaultReply, batchDeleteItemDefaultReply, uploadItemDefaultReplyImage, getItemDeliveryConfig, saveItemDeliveryConfig, deleteItemDeliveryConfig } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
+import { getCards, type CardData } from '@/api/cards'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
@@ -48,6 +64,16 @@ export function Items() {
   // 删除确认状态
   const [deleteDefaultReplyConfirm, setDeleteDefaultReplyConfirm] = useState(false)
   const [batchDeleteDefaultReplyConfirm, setBatchDeleteDefaultReplyConfirm] = useState(false)
+
+  // 发货配置弹窗状态
+  const [deliveryConfigItem, setDeliveryConfigItem] = useState<Item | null>(null)
+  const [cards, setCards] = useState<CardData[]>([])
+  const [selectedCardId, setSelectedCardId] = useState<number | null>(null)
+  const [autoConfirm, setAutoConfirm] = useState(true)
+  const [deliveryEnabled, setDeliveryEnabled] = useState(true)
+  const [loadingDeliveryConfig, setLoadingDeliveryConfig] = useState(false)
+  const [savingDeliveryConfig, setSavingDeliveryConfig] = useState(false)
+  const [currentDeliveryConfig, setCurrentDeliveryConfig] = useState<any>(null)
 
   const loadItems = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -420,6 +446,101 @@ export function Items() {
     }
   }
 
+  // ==================== 发货配置相关函数 ====================
+
+  // 加载卡券列表
+  const loadCards = async () => {
+    try {
+      const result = await getCards()
+      if (result.success && result.data) {
+        setCards(result.data.filter(card => card.enabled))
+      }
+    } catch {
+      addToast({ type: 'error', message: '加载卡券列表失败' })
+    }
+  }
+
+  // 打开发货配置弹窗
+  const handleOpenDeliveryConfig = async (item: Item) => {
+    setDeliveryConfigItem(item)
+    setLoadingDeliveryConfig(true)
+
+    // 加载卡券列表
+    await loadCards()
+
+    try {
+      const result = await getItemDeliveryConfig(item.cookie_id, item.item_id)
+      if (result.success && result.data) {
+        // 保存当前配置用于显示
+        setCurrentDeliveryConfig(result.data)
+        // 设置表单值
+        setSelectedCardId(result.data.card_id || null)
+        setAutoConfirm(result.data.auto_confirm ?? true)
+        setDeliveryEnabled(result.data.enabled ?? true)
+      } else {
+        setCurrentDeliveryConfig(null)
+        setSelectedCardId(null)
+        setAutoConfirm(true)
+        setDeliveryEnabled(true)
+      }
+    } catch (error) {
+      console.error('加载发货配置失败:', error)
+      setCurrentDeliveryConfig(null)
+      setSelectedCardId(null)
+      setAutoConfirm(true)
+      setDeliveryEnabled(true)
+    } finally {
+      setLoadingDeliveryConfig(false)
+    }
+  }
+
+  // 关闭发货配置弹窗
+  const closeDeliveryConfig = () => {
+    setDeliveryConfigItem(null)
+    setCurrentDeliveryConfig(null)
+    setSelectedCardId(null)
+    setAutoConfirm(true)
+    setDeliveryEnabled(true)
+  }
+
+  // 保存发货配置
+  const handleSaveDeliveryConfig = async () => {
+    if (!deliveryConfigItem || !selectedCardId) {
+      addToast({ type: 'warning', message: '请选择卡券' })
+      return
+    }
+
+    setSavingDeliveryConfig(true)
+    try {
+      await saveItemDeliveryConfig(deliveryConfigItem.cookie_id, deliveryConfigItem.item_id, {
+        card_id: selectedCardId,
+        auto_confirm: autoConfirm,
+        enabled: deliveryEnabled
+      })
+      addToast({ type: 'success', message: '发货配置保存成功' })
+      closeDeliveryConfig()
+      await loadItems() // 重新加载商品列表以更新多规格状态
+    } catch {
+      addToast({ type: 'error', message: '保存失败' })
+    } finally {
+      setSavingDeliveryConfig(false)
+    }
+  }
+
+  // 删除发货配置
+  const handleDeleteDeliveryConfig = async () => {
+    if (!deliveryConfigItem) return
+
+    try {
+      await deleteItemDeliveryConfig(deliveryConfigItem.cookie_id, deliveryConfigItem.item_id)
+      addToast({ type: 'success', message: '发货配置已删除' })
+      closeDeliveryConfig()
+      await loadItems()
+    } catch {
+      addToast({ type: 'error', message: '删除失败' })
+    }
+  }
+
   const filteredItems = items.filter((item) => {
     if (!searchKeyword) return true
     const keyword = searchKeyword.toLowerCase()
@@ -554,6 +675,7 @@ export function Items() {
                 <th className="whitespace-nowrap">价格</th>
                 <th className="whitespace-nowrap">多规格</th>
                 <th className="whitespace-nowrap">多数量发货</th>
+                <th className="whitespace-nowrap">发货配置</th>
                 <th className="whitespace-nowrap">更新时间</th>
                 <th className="whitespace-nowrap sticky right-0 bg-slate-50 dark:bg-slate-800">操作</th>
               </tr>
@@ -561,7 +683,7 @@ export function Items() {
             <tbody>
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className="empty-state py-8">
                       <Package className="empty-state-icon" />
                       <p className="text-gray-500">暂无商品数据</p>
@@ -629,7 +751,8 @@ export function Items() {
                     </td>
                     <td>
                       <button
-                        onClick={() => handleToggleMultiQuantity(item)}
+                        title="配置发货卡券"
+                        aria-label="配置发货卡券"
                         className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
                           item.multi_quantity_delivery
                             ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
@@ -638,6 +761,15 @@ export function Items() {
                         title={item.multi_quantity_delivery ? '点击关闭多数量发货' : '点击开启多数量发货'}
                       >
                         {item.multi_quantity_delivery ? '已开启' : '已关闭'}
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        onClick={() => handleOpenDeliveryConfig(item)}
+                        className="px-2 py-1 rounded text-xs font-medium transition-colors bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400"
+                        title="配置发货卡券"
+                      >
+                        <Settings className="w-4 h-4 inline-block" />
                       </button>
                     </td>
                     <td className="text-gray-500 text-xs">
@@ -1050,6 +1182,157 @@ export function Items() {
                 className="btn-ios-danger"
               >
                 确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 发货配置弹窗 */}
+      {deliveryConfigItem && (
+        <div className="modal-overlay">
+          <div className="modal-content max-w-lg">
+            <div className="modal-header">
+              <h2 className="modal-title">发货配置</h2>
+              <button onClick={closeDeliveryConfig} className="modal-close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              {loadingDeliveryConfig ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+                </div>
+              ) : (
+                <>
+                  <div className="input-group">
+                    <label className="input-label">商品信息</label>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                      <div>商品ID: {deliveryConfigItem.item_id}</div>
+                      <div className="line-clamp-1">标题: {deliveryConfigItem.item_title || deliveryConfigItem.title || '-'}</div>
+                    </div>
+                  </div>
+
+                  {currentDeliveryConfig && currentDeliveryConfig.card_id && (
+                    <div className="input-group">
+                      <label className="input-label">当前配置</label>
+                      <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                        <div className="text-sm space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-600 dark:text-gray-400">卡券:</span>
+                            <span className="font-medium text-blue-600 dark:text-blue-400">
+                              {currentDeliveryConfig.card_name || '未知卡券'}
+                            </span>
+                            <span className="text-xs text-gray-500">
+                              ({currentDeliveryConfig.card_type === 'api' ? 'API接口' :
+                                currentDeliveryConfig.card_type === 'text' ? '固定文字' :
+                                currentDeliveryConfig.card_type === 'data' ? '批量数据' : '图片'})
+                              {currentDeliveryConfig.card_is_multi_spec ? ' [多规格]' : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-600 dark:text-gray-400">自动确认发货:</span>
+                            <span className={`font-medium ${currentDeliveryConfig.auto_confirm ? 'text-green-600 dark:text-green-400' : 'text-gray-500'}`}>
+                              {currentDeliveryConfig.auto_confirm ? '已开启' : '已关闭'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-600 dark:text-gray-400">配置状态:</span>
+                            <span className={`font-medium ${currentDeliveryConfig.enabled ? 'text-green-600 dark:text-green-400' : 'text-gray-500'}`}>
+                              {currentDeliveryConfig.enabled ? '已启用' : '已禁用'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="input-group">
+                    <label className="input-label">选择卡券 *</label>
+                    <select
+                      value={selectedCardId || ''}
+                      onChange={(e) => setSelectedCardId(e.target.value ? Number(e.target.value) : null)}
+                      className="input-ios"
+                    >
+                      <option value="">请选择卡券</option>
+                      {cards.map((card) => (
+                        <option key={card.id} value={card.id}>
+                          {card.name} ({card.type === 'api' ? 'API接口' : card.type === 'text' ? '固定文字' : card.type === 'data' ? '批量数据' : '图片'})
+                          {card.is_multi_spec ? ' [多规格]' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      选择卡券后，商品的多规格状态将自动同步为卡券的多规格配置
+                    </p>
+                  </div>
+
+                  <div className="input-group">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoConfirm}
+                        onChange={(e) => setAutoConfirm(e.target.checked)}
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        自动确认发货
+                      </span>
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1 ml-6">
+                      开启后，发货完成将自动调用确认发货接口
+                    </p>
+                  </div>
+
+                  <div className="input-group">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={deliveryEnabled}
+                        onChange={(e) => setDeliveryEnabled(e.target.checked)}
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        启用发货配置
+                      </span>
+                    </label>
+                    <p className="text-xs text-gray-500 mt-1 ml-6">
+                      关闭后，该商品将不会使用此配置自动发货
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              {selectedCardId && (
+                <button
+                  type="button"
+                  onClick={handleDeleteDeliveryConfig}
+                  className="btn-ios-danger mr-auto"
+                >
+                  删除配置
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={closeDeliveryConfig}
+                className="btn-ios-secondary"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveDeliveryConfig}
+                className="btn-ios-primary"
+                disabled={savingDeliveryConfig || !selectedCardId}
+              >
+                {savingDeliveryConfig ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    保存中...
+                  </span>
+                ) : (
+                  '保存配置'
+                )}
               </button>
             </div>
           </div>

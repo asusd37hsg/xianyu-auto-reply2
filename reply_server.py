@@ -4799,6 +4799,148 @@ def delete_item_info(
         raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
 
 
+# ==================== 商品发货配置相关API ====================
+
+class ItemDeliveryConfigRequest(BaseModel):
+    """商品发货配置请求模型"""
+    card_id: int
+    auto_confirm: bool = True
+    enabled: bool = True
+
+
+@app.post("/items/{cookie_id}/{item_id}/delivery-config")
+def save_item_delivery_config(
+    cookie_id: str,
+    item_id: str,
+    config: ItemDeliveryConfigRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """保存商品发货配置"""
+    try:
+        # 检查cookie是否属于当前用户
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        logger.info(f"用户 {user_id} 拥有 {len(user_cookies)} 个 cookies")
+        logger.debug(f"请求的 cookie_id: {cookie_id}, 类型: {type(cookie_id)}")
+
+        if cookie_id not in user_cookies:
+            logger.error(f"Cookie {cookie_id} 不在用户 {user_id} 的 cookies 列表中")
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        # 验证卡券是否存在（卡券是全局共享的，不需要验证用户权限）
+        logger.info(f"验证卡券: card_id={config.card_id}")
+        card = db_manager.get_card_by_id(config.card_id)
+        logger.info(f"卡券查询结果: {card}")
+
+        if not card:
+            logger.error(f"卡券不存在: {config.card_id}")
+            raise HTTPException(status_code=404, detail="卡券不存在")
+
+        # 卡券是全局共享的，所有用户都可以使用
+        logger.info(f"卡券验证通过: {card.get('name')} (ID: {config.card_id})")
+
+        success = db_manager.save_item_delivery_config(
+            cookie_id=cookie_id,
+            item_id=item_id,
+            card_id=config.card_id,
+            auto_confirm=config.auto_confirm,
+            enabled=config.enabled
+        )
+
+        if success:
+            return {"message": "商品发货配置保存成功"}
+        else:
+            raise HTTPException(status_code=500, detail="保存失败")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"保存商品发货配置异常: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
+
+
+@app.get("/items/{cookie_id}/{item_id}/delivery-config")
+def get_item_delivery_config(
+    cookie_id: str,
+    item_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取商品发货配置"""
+    try:
+        # 检查cookie是否属于当前用户
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        config = db_manager.get_item_delivery_config(cookie_id, item_id)
+        return {"success": True, "data": config} if config else {"success": True, "data": None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取商品发货配置异常: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
+
+
+@app.delete("/items/{cookie_id}/{item_id}/delivery-config")
+def delete_item_delivery_config(
+    cookie_id: str,
+    item_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """删除商品发货配置"""
+    try:
+        # 检查cookie是否属于当前用户
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        success = db_manager.delete_item_delivery_config(cookie_id, item_id)
+        if success:
+            return {"message": "商品发货配置删除成功"}
+        else:
+            raise HTTPException(status_code=404, detail="配置不存在")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除商品发货配置异常: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
+
+
+@app.get("/items/{cookie_id}/delivery-configs")
+def get_all_item_delivery_configs(
+    cookie_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取指定账号的所有商品发货配置"""
+    try:
+        # 检查cookie是否属于当前用户
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        configs = db_manager.get_all_item_delivery_configs(cookie_id)
+        return configs
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取商品发货配置列表异常: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
+
+
 class BatchDeleteRequest(BaseModel):
     items: List[dict]  # [{"cookie_id": "xxx", "item_id": "yyy"}, ...]
 

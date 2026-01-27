@@ -133,3 +133,45 @@ export const batchDeleteItemDefaultReply = (
 ): Promise<ApiResponse> => {
   return post(`/items/${cookieId}/batch-delete-default-reply`, { item_ids: itemIds })
 }
+
+
+// ==================== 商品发货配置 ====================
+
+// 商品发货配置类型
+export interface ItemDeliveryConfig {
+  id?: number
+  cookie_id: string
+  item_id: string
+  card_id: number
+  card_name?: string
+  card_type?: string
+  card_is_multi_spec?: boolean
+  auto_confirm: boolean
+  enabled: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+// 获取商品发货配置
+export const getItemDeliveryConfig = (cookieId: string, itemId: string): Promise<ApiResponse<ItemDeliveryConfig>> => {
+  return get(`/items/${cookieId}/${itemId}/delivery-config`)
+}
+
+// 保存商品发货配置
+export const saveItemDeliveryConfig = (
+  cookieId: string,
+  itemId: string,
+  data: { card_id: number; auto_confirm: boolean; enabled: boolean }
+): Promise<ApiResponse> => {
+  return post(`/items/${cookieId}/${itemId}/delivery-config`, data)
+}
+
+// 删除商品发货配置
+export const deleteItemDeliveryConfig = (cookieId: string, itemId: string): Promise<ApiResponse> => {
+  return del(`/items/${cookieId}/${itemId}/delivery-config`)
+}
+
+// 获取账号所有商品发货配置
+export const getAllItemDeliveryConfigs = (cookieId: string): Promise<ApiResponse<ItemDeliveryConfig[]>> => {
+  return get(`/items/${cookieId}/delivery-configs`)
+}

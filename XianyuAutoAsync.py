@@ -4501,12 +4501,185 @@ class XianyuLive:
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
+    async def _get_card_content(self, card: dict, spec_name: str = None, spec_value: str = None, order_id: str = None, item_id: str = None, send_user_id: str = None):
+        """获取卡券内容的统一方法
+
+        Args:
+            card: 卡券信息字典
+            spec_name: 规格名称（用于多规格卡券）
+            spec_value: 规格值（用于多规格卡券）
+            order_id: 订单ID（用于API类型卡券的参数替换）
+            item_id: 商品ID（用于API类型卡券的参数替换）
+            send_user_id: 用户ID（用于API类型卡券的参数替换）
+
+        Returns:
+            str: 卡券内容，如果获取失败返回None
+        """
+        try:
+            from db_manager import db_manager
+
+            card_type = card.get('type')
+            card_id = card.get('id')
+
+            if card_type == 'api':
+                # API类型：调用API获取内容
+                delivery_content = await self._get_api_card_content(card, order_id, item_id, send_user_id, spec_name, spec_value)
+                return delivery_content
+
+            elif card_type == 'text':
+                # 固定文字类型：直接使用文字内容
+                return card.get('text_content')
+
+            elif card_type == 'data':
+                # 批量数据类型：获取并消费第一条数据
+                return db_manager.consume_batch_data(card_id)
+
+            elif card_type == 'image':
+                # 图片类型：返回图片URL
+                image_url = card.get('image_url')
+                if image_url:
+                    return image_url
+                else:
+                    logger.warning(f"图片卡券缺少图片URL: 卡券ID={card_id}")
+                    return None
+            else:
+                logger.error(f"未知的卡券类型: {card_type}")
+                return None
+
+        except Exception as e:
+            logger.error(f"获取卡券内容失败: {self._safe_str(e)}")
+            return None
+
     async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None):
         """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
         try:
             from db_manager import db_manager
 
             logger.info(f"开始自动发货检查: 商品ID={item_id}")
+
+            # ==================== 优先检查商品级别的发货配置 ====================
+            item_delivery_config = None
+            if item_id and item_id != "未知商品":
+                try:
+                    item_delivery_config = db_manager.get_item_delivery_config(self.cookie_id, item_id)
+                    if item_delivery_config:
+                        if not item_delivery_config.get('enabled', True):
+                            logger.info(f"商品 {item_id} 的发货配置已禁用，跳过自动发货")
+                            return None
+
+                        logger.info(f"✅ 找到商品级别发货配置: 商品={item_id}, 卡券={item_delivery_config.get('card_name')} (ID:{item_delivery_config.get('card_id')})")
+
+                        # 使用商品配置的卡券直接发货
+                        card_id = item_delivery_config.get('card_id')
+                        auto_confirm = item_delivery_config.get('auto_confirm', True)
+
+                        # 获取卡券信息
+                        card = db_manager.get_card_by_id(card_id)
+                        if not card:
+                            logger.error(f"商品配置的卡券不存在: {card_id}")
+                            return None
+
+                        if not card.get('enabled', True):
+                            logger.warning(f"商品配置的卡券已禁用: {card.get('name')}")
+                            return None
+
+                        # 检查是否为多规格卡券
+                        is_multi_spec_card = card.get('is_multi_spec', False)
+
+                        # 如果是多规格卡券，需要获取订单规格信息
+                        spec_name = None
+                        spec_value = None
+                        if is_multi_spec_card and order_id:
+                            logger.info(f"检测到多规格卡券，获取订单规格信息: {order_id}")
+                            try:
+                                order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
+                                if order_detail and isinstance(order_detail, dict):
+                                    spec_name = order_detail.get('spec_name', '')
+                                    spec_value = order_detail.get('spec_value', '')
+                                    if spec_name and spec_value:
+                                        logger.info(f"获取到规格信息: {spec_name} = {spec_value}")
+                                        # 验证规格是否匹配卡券配置
+                                        card_spec_name = card.get('spec_name', '')
+                                        card_spec_value = card.get('spec_value', '')
+                                        if card_spec_name and card_spec_value:
+                                            if spec_name != card_spec_name or spec_value != card_spec_value:
+                                                logger.warning(f"订单规格不匹配卡券配置: 订单[{spec_name}:{spec_value}] vs 卡券[{card_spec_name}:{card_spec_value}]")
+                                                return None
+                                    else:
+                                        logger.warning(f"未能获取到规格信息，将跳过自动发货")
+                                        return None
+                                else:
+                                    logger.warning(f"获取订单详情失败，将跳过自动发货")
+                                    return None
+                            except Exception as e:
+                                logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
+                                return None
+
+                        # 执行延时发货
+                        delay_seconds = card.get('delay_seconds', 0)
+                        if delay_seconds > 0:
+                            logger.info(f"延时发货: {delay_seconds}秒")
+                            await asyncio.sleep(delay_seconds)
+
+                        # 获取发货内容
+                        delivery_content = await self._get_card_content(card, spec_name, spec_value, order_id, item_id, send_user_id)
+                        if not delivery_content:
+                            logger.error(f"获取卡券内容失败: {card.get('name')}")
+                            return None
+
+                        # 检查是否需要多数量发货
+                        multi_quantity_delivery = db_manager.get_item_multi_quantity_delivery_status(self.cookie_id, item_id)
+                        quantity = 1
+
+                        if multi_quantity_delivery and order_id:
+                            try:
+                                order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
+                                if order_detail and isinstance(order_detail, dict):
+                                    quantity_str = order_detail.get('quantity', '1')
+                                    try:
+                                        quantity = int(quantity_str)
+                                        logger.info(f"多数量发货: 数量={quantity}")
+                                    except:
+                                        quantity = 1
+                            except:
+                                pass
+
+                        # 商品级别配置只返回第一份内容，多数量发货由上层调用者处理
+                        # 这里只返回单份内容，不直接发送
+                        logger.info(f"商品级别发货配置返回内容，类型: {card.get('type')}")
+
+                        # 根据卡券类型返回相应格式的内容
+                        if card.get('type') == 'image':
+                            # 图片类型：返回图片发送标记
+                            # delivery_content 已经是图片URL了（由 _get_card_content 返回）
+                            if delivery_content:
+                                delivery_content = f"__IMAGE_SEND__{card_id}|{delivery_content}"
+                                logger.info(f"准备返回图片发送标记: {delivery_content}")
+                            else:
+                                logger.error(f"图片卡券缺少图片URL: 卡券ID={card_id}")
+                                return None
+                        else:
+                            # 文本类型：直接返回内容
+                            pass  # delivery_content 已经在前面获取
+
+                        # 如果配置了自动确认且有订单ID，则确认发货
+                        if auto_confirm and order_id:
+                            logger.info(f"商品配置了自动确认发货，准备确认订单: {order_id}")
+                            try:
+                                await self.auto_confirm(order_id, item_id)
+                                logger.info(f"✅ 订单 {order_id} 确认发货成功")
+                            except Exception as e:
+                                logger.error(f"确认发货失败: {self._safe_str(e)}")
+
+                        logger.info(f"✅ 商品级别发货配置执行完成，返回内容")
+                        return delivery_content
+
+                except Exception as e:
+                    logger.error(f"检查商品发货配置失败: {self._safe_str(e)}")
+                    # 继续执行原有的发货规则逻辑
+
+            # ==================== 如果没有商品级别配置，使用原有的发货规则逻辑 ====================
+            logger.info(f"未找到商品级别发货配置，使用发货规则匹配")
 
             # 获取商品详细信息
             item_info = None
