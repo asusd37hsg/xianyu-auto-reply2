@@ -7947,7 +7947,7 @@ class XianyuLive:
             # 如果用户连续发送消息，等待用户停止发送后再回复最后一条消息
             await self._schedule_debounced_reply(
                 chat_id=chat_id,
-                message_data=message_data,
+                message_data=message,
                 websocket=websocket,
                 send_user_name=send_user_name,
                 send_user_id=send_user_id,
