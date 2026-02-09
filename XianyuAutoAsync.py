@@ -7683,6 +7683,26 @@ class XianyuLive:
             except:
                 pass
 
+            # 【重要】检查卡片更新消息中的自动发货触发（message['1']为字符串的情况）
+            try:
+                message_1_val = message.get('1')
+                message_4 = message.get('4')
+                if isinstance(message_1_val, str) and isinstance(message_4, dict):
+                    card_reminder_content = message_4.get('reminderContent', '')
+                    if card_reminder_content and self._is_auto_delivery_trigger(card_reminder_content):
+                        logger.info(f'[{msg_time}] 【{self.cookie_id}】检测到卡片更新消息中的付款通知: {card_reminder_content}')
+                        # Extract info from message['4']
+                        card_send_user_id = message_4.get('senderUserId', user_id or 'unknown')
+                        card_send_user_name = message_4.get('reminderTitle', '买家')
+                        card_chat_id_raw = message.get('2', '')
+                        card_chat_id = card_chat_id_raw.split('@')[0] if '@' in str(card_chat_id_raw) else str(card_chat_id_raw)
+                        # item_id already extracted earlier in the flow
+                        await self._handle_auto_delivery(websocket, message, card_send_user_name, card_send_user_id,
+                                                        item_id, card_chat_id, msg_time)
+                        return
+            except Exception as e:
+                logger.error(f"【{self.cookie_id}】处理卡片更新消息自动发货失败: {self._safe_str(e)}")
+
             # 判断是否为聊天消息
             if not self.is_chat_message(message):
                 logger.warning("非聊天消息")
@@ -7783,6 +7803,18 @@ class XianyuLive:
                 except Exception as e:
                     logger.error(f"订单状态处理失败: {self._safe_str(e)}")
 
+            # 过滤系统提示消息（contentType=14, msgArg1=MsgTips）
+            try:
+                ext_json_str = message_10.get("extJson", "")
+                if ext_json_str:
+                    ext_json = json.loads(ext_json_str)
+                    msg_arg1 = ext_json.get("msgArg1", "")
+                    if msg_arg1 == "MsgTips":
+                        logger.info(f'[{msg_time}] 【{self.cookie_id}】系统提示消息(MsgTips)不处理: {send_message}')
+                        return
+            except Exception:
+                pass
+
             # 【优先处理】检查系统消息和自动发货触发消息（不受人工接入暂停影响）
             if send_message == '[我已拍下，待付款]':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】系统消息不处理')
@@ -7819,6 +7851,9 @@ class XianyuLive:
                 return
             elif send_message == '已发货':
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】发货确认消息不处理')
+                return
+            elif send_message == '[未付款，买家关闭了订单]':
+                logger.info(f'[{msg_time}] 【{self.cookie_id}】买家关闭订单消息不处理')
                 return
             # 【重要】检查是否为自动发货触发消息 - 即使在人工接入暂停期间也要处理
             elif self._is_auto_delivery_trigger(send_message):
