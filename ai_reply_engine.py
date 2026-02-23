@@ -388,6 +388,14 @@ class AIReplyEngine:
                 item_desc += f"商品价格: {item_info.get('price', '未知')}元\n"
                 item_desc += f"商品描述: {item_info.get('desc', '无')}"
 
+                # 注入两级补充说明
+                account_note = settings.get('context_note', '')
+                item_note = item_info.get('context_note', '')
+                if account_note:
+                    item_desc += f"\n卖家账号补充说明: {account_note}"
+                if item_note:
+                    item_desc += f"\n商品补充说明: {item_note}"
+
                 # 8. 构建对话历史
                 context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条
 

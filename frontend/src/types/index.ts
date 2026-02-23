@@ -75,6 +75,7 @@ export interface Item {
   is_multi_spec?: number | boolean
   multi_delivery?: boolean
   multi_quantity_delivery?: number | boolean
+  context_note?: string
   created_at?: string
   updated_at?: string
 }

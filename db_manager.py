@@ -531,6 +531,22 @@ class DBManager:
                 cursor.execute("ALTER TABLE cookies ADD COLUMN pause_duration INTEGER DEFAULT 10")
                 logger.info("数据库迁移完成：添加pause_duration列")
 
+            # 账号级补充说明
+            try:
+                cursor.execute("SELECT context_note FROM ai_reply_settings LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("添加ai_reply_settings表的context_note列...")
+                cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN context_note TEXT DEFAULT ''")
+                logger.info("数据库迁移完成：添加ai_reply_settings.context_note列")
+
+            # 商品级补充说明
+            try:
+                cursor.execute("SELECT context_note FROM item_info LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("添加item_info表的context_note列...")
+                cursor.execute("ALTER TABLE item_info ADD COLUMN context_note TEXT DEFAULT ''")
+                logger.info("数据库迁移完成：添加item_info.context_note列")
+
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
             # 迁移失败不应该阻止程序启动
@@ -1832,8 +1848,8 @@ class DBManager:
                 INSERT OR REPLACE INTO ai_reply_settings
                 (cookie_id, ai_enabled, model_name, api_key, base_url,
                  max_discount_percent, max_discount_amount, max_bargain_rounds,
-                 custom_prompts, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 custom_prompts, context_note, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     cookie_id,
                     settings.get('ai_enabled', False),
@@ -1843,7 +1859,8 @@ class DBManager:
                     settings.get('max_discount_percent', 10),
                     settings.get('max_discount_amount', 100),
                     settings.get('max_bargain_rounds', 3),
-                    settings.get('custom_prompts', '')
+                    settings.get('custom_prompts', ''),
+                    settings.get('context_note', '')
                 ))
                 self.conn.commit()
                 logger.debug(f"AI回复设置保存成功: {cookie_id}")
@@ -1869,7 +1886,7 @@ class DBManager:
                 cursor.execute('''
                 SELECT ai_enabled, model_name, api_key, base_url,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
-                       custom_prompts
+                       custom_prompts, context_note
                 FROM ai_reply_settings WHERE cookie_id = ?
                 ''', (cookie_id,))
 
@@ -1899,7 +1916,8 @@ class DBManager:
                         'max_discount_percent': result[4],
                         'max_discount_amount': result[5],
                         'max_bargain_rounds': result[6],
-                        'custom_prompts': result[7]
+                        'custom_prompts': result[7],
+                        'context_note': result[8] if result[8] is not None else ''
                     }
                 else:
                     # 账号没有设置，使用系统设置作为默认值
@@ -1911,7 +1929,8 @@ class DBManager:
                         'max_discount_percent': 10,
                         'max_discount_amount': 100,
                         'max_bargain_rounds': 3,
-                        'custom_prompts': ''
+                        'custom_prompts': '',
+                        'context_note': ''
                     }
             except Exception as e:
                 logger.error(f"获取AI回复设置失败: {e}")
@@ -1923,7 +1942,8 @@ class DBManager:
                     'max_discount_percent': 10,
                     'max_discount_amount': 100,
                     'max_bargain_rounds': 3,
-                    'custom_prompts': ''
+                    'custom_prompts': '',
+                    'context_note': ''
                 }
 
     def update_ai_conversation_content(self, chat_id: str, cookie_id: str,
@@ -1948,7 +1968,7 @@ class DBManager:
                 cursor.execute('''
                 SELECT cookie_id, ai_enabled, model_name, api_key, base_url,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
-                       custom_prompts
+                       custom_prompts, context_note
                 FROM ai_reply_settings
                 ''')
 
@@ -1963,7 +1983,8 @@ class DBManager:
                         'max_discount_percent': row[5],
                         'max_discount_amount': row[6],
                         'max_bargain_rounds': row[7],
-                        'custom_prompts': row[8]
+                        'custom_prompts': row[8],
+                        'context_note': row[9] if row[9] is not None else ''
                     }
 
                 return result
@@ -4028,6 +4049,30 @@ class DBManager:
 
         except Exception as e:
             logger.error(f"更新商品多规格状态失败: {e}")
+            self.conn.rollback()
+            return False
+
+    def update_item_context_note(self, cookie_id: str, item_id: str, context_note: str) -> bool:
+        """更新商品的补充说明"""
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                UPDATE item_info
+                SET context_note = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE cookie_id = ? AND item_id = ?
+                ''', (context_note, cookie_id, item_id))
+
+                if cursor.rowcount > 0:
+                    self.conn.commit()
+                    logger.info(f"更新商品补充说明成功: {item_id}")
+                    return True
+                else:
+                    logger.warning(f"商品不存在，无法更新补充说明: {item_id}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"更新商品补充说明失败: {e}")
             self.conn.rollback()
             return False
 

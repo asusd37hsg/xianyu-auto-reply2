@@ -38,6 +38,7 @@ export function Items() {
   // 编辑弹窗状态
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [editDetail, setEditDetail] = useState('')
+  const [editContextNote, setEditContextNote] = useState('')
   const [editSaving, setEditSaving] = useState(false)
 
   // 商品默认回复弹窗状态
@@ -221,6 +222,7 @@ export function Items() {
   const handleEdit = (item: Item) => {
     setEditingItem(item)
     setEditDetail(item.item_detail || item.desc || '')
+    setEditContextNote(item.context_note || '')
   }
 
   // 保存编辑
@@ -230,6 +232,7 @@ export function Items() {
     try {
       await updateItem(editingItem.cookie_id, editingItem.item_id, {
         item_detail: editDetail,
+        context_note: editContextNote,
       })
       addToast({ type: 'success', message: '商品详情已更新' })
       setEditingItem(null)
@@ -844,6 +847,15 @@ export function Items() {
                   onChange={(e) => setEditDetail(e.target.value)}
                   className="input-ios h-32 resize-none"
                   placeholder="输入商品详情..."
+                />
+              </div>
+              <div className="input-group">
+                <label className="input-label">商品补充信息</label>
+                <textarea
+                  value={editContextNote}
+                  onChange={(e) => setEditContextNote(e.target.value)}
+                  className="input-ios h-24 resize-none"
+                  placeholder="仅用于AI回复的补充说明，如实际成色、附赠物、FAQ、议价底线等..."
                 />
               </div>
             </div>

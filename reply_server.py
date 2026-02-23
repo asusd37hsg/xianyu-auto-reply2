@@ -4741,6 +4741,7 @@ def get_item_detail(cookie_id: str, item_id: str, current_user: Dict[str, Any] =
 
 class ItemDetailUpdate(BaseModel):
     item_detail: str
+    context_note: Optional[str] = None
 
 
 @app.put("/items/{cookie_id}/{item_id}")
@@ -4761,6 +4762,8 @@ def update_item_detail(
             raise HTTPException(status_code=403, detail="无权限操作该Cookie")
 
         success = db_manager.update_item_detail(cookie_id, item_id, update_data.item_detail)
+        if update_data.context_note is not None:
+            db_manager.update_item_context_note(cookie_id, item_id, update_data.context_note)
         if success:
             return {"message": "商品详情更新成功"}
         else:
@@ -4954,6 +4957,7 @@ class AIReplySettings(BaseModel):
     max_discount_amount: int = 100
     max_bargain_rounds: int = 3
     custom_prompts: str = ""
+    context_note: str = ""
 
 
 @app.delete("/items/batch")

@@ -3456,7 +3456,8 @@ class XianyuLive:
                 item_info = {
                     'title': item_info_raw.get('item_title', '未知商品'),
                     'price': self._parse_price(item_info_raw.get('item_price', '0')),
-                    'desc': item_info_raw.get('item_detail', '暂无商品描述')
+                    'desc': item_info_raw.get('item_detail', '暂无商品描述'),
+                    'context_note': item_info_raw.get('context_note', ''),
                 }
 
             # 生成AI回复

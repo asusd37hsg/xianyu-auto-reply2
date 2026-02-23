@@ -155,6 +155,7 @@ export interface AIReplySettings {
   max_discount_amount?: number
   max_bargain_rounds?: number
   custom_prompts?: string
+  context_note?: string
   // 兼容旧字段（前端内部使用）
   enabled?: boolean
 }
@@ -176,6 +177,7 @@ export const updateAIReplySettings = (cookieId: string, settings: Partial<AIRepl
     max_discount_amount: settings.max_discount_amount ?? 100,
     max_bargain_rounds: settings.max_bargain_rounds ?? 3,
     custom_prompts: settings.custom_prompts ?? '',
+    context_note: settings.context_note ?? '',
   }
   return put(`/ai-reply-settings/${cookieId}`, payload)
 }

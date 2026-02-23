@@ -72,6 +72,7 @@ export function Accounts() {
   const [aiMaxDiscountAmount, setAiMaxDiscountAmount] = useState(100)
   const [aiMaxBargainRounds, setAiMaxBargainRounds] = useState(3)
   const [aiCustomPrompts, setAiCustomPrompts] = useState('')
+  const [aiContextNote, setAiContextNote] = useState('')
   const [aiSettingsSaving, setAiSettingsSaving] = useState(false)
   const [aiSettingsLoading, setAiSettingsLoading] = useState(false)
 
@@ -515,6 +516,7 @@ export function Accounts() {
       setAiMaxDiscountAmount(settings.max_discount_amount ?? 100)
       setAiMaxBargainRounds(settings.max_bargain_rounds ?? 3)
       setAiCustomPrompts(settings.custom_prompts ?? '')
+      setAiContextNote(settings.context_note ?? '')
     } catch {
       addToast({ type: 'error', message: '加载AI设置失败' })
     } finally {
@@ -532,6 +534,7 @@ export function Accounts() {
         max_discount_amount: aiMaxDiscountAmount,
         max_bargain_rounds: aiMaxBargainRounds,
         custom_prompts: aiCustomPrompts,
+        context_note: aiContextNote,
       })
       // 更新本地状态
       setAccounts(prev => prev.map(a =>
@@ -1301,6 +1304,16 @@ export function Accounts() {
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                       留空使用系统默认提示词。格式：{`{"classify": "...", "price": "...", "tech": "...", "default": "..."}`}
                     </p>
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">全局补充说明</label>
+                    <textarea
+                      value={aiContextNote}
+                      onChange={(e) => setAiContextNote(e.target.value)}
+                      className="input-ios h-24 resize-none"
+                      placeholder="适用于该账号所有商品的补充说明，如发货政策、售后规则等..."
+                    />
                   </div>
                 </>
               )}
