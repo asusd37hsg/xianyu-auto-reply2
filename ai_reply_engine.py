@@ -164,17 +164,30 @@ class AIReplyEngine:
         # --- 转换消息格式 (修复 P1-3: 增强健壮性) ---
         system_instruction = ""
         user_content_parts = []
+        image_parts = []
 
         # 遍历消息，找到 system 和所有的 user parts
         for msg in messages:
             if msg['role'] == 'system':
                 system_instruction = msg['content']
             elif msg['role'] == 'user':
-                # 我们只关心 user content
-                user_content_parts.append(msg['content'])
-        
+                content = msg['content']
+                if isinstance(content, list):
+                    for part in content:
+                        if part.get('type') == 'text':
+                            user_content_parts.append(part['text'])
+                        elif part.get('type') == 'image_url':
+                            img_url = part['image_url']['url']
+                            # Gemini不支持外部HTTP URL，需转base64
+                            if not img_url.startswith('data:'):
+                                img_url = self._image_url_to_base64_url(img_url)
+                            _, data = img_url.split(',', 1)
+                            mime = img_url.split(':')[1].split(';')[0]
+                            image_parts.append({"inlineData": {"mimeType": mime, "data": data}})
+                else:
+                    user_content_parts.append(content)
+
         # 将所有 user parts 合并为最后的 user_content
-        # 在我们的使用场景中 (generate_reply)，只会有一个 user part，但这样更安全
         user_content = "\n".join(user_content_parts)
 
         if not user_content:
@@ -186,7 +199,7 @@ class AIReplyEngine:
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": user_content}]
+                    "parts": [{"text": user_content}] + image_parts
                 }
             ],
             "generationConfig": {
@@ -237,6 +250,15 @@ class AIReplyEngine:
                 logger.error(f"响应状态码: {getattr(e.response, 'status_code', 'unknown')}")
                 logger.error(f"响应内容: {getattr(e.response, 'text', 'unknown')}")
             raise
+
+    def _image_url_to_base64_url(self, image_url: str) -> str:
+        """将图片URL转换为base64 data URL"""
+        import base64
+        resp = requests.get(image_url, timeout=10)
+        resp.raise_for_status()
+        mime = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+        b64 = base64.b64encode(resp.content).decode()
+        return f"data:{mime};base64,{b64}"
 
     def is_ai_enabled(self, cookie_id: str) -> bool:
         """检查指定账号是否启用AI回复"""
@@ -291,7 +313,7 @@ class AIReplyEngine:
     
     def generate_reply(self, message: str, item_info: dict, chat_id: str,
                       cookie_id: str, user_id: str, item_id: str,
-                      skip_wait: bool = False) -> Optional[str]:
+                      skip_wait: bool = False, image_url: str = None) -> Optional[str]:
         """生成AI回复"""
         if not self.is_ai_enabled(cookie_id):
             return None
@@ -302,7 +324,8 @@ class AIReplyEngine:
             logger.info(f"检测到意图: {intent} (账号: {cookie_id})")
             
             # 在锁外先保存用户消息到数据库，让所有消息都能立即保存
-            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", message, intent)
+            user_history_content = "[图片]" if image_url else message
+            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", user_history_content, intent)
             
             # 如果调用方已经实现了去抖（debounce），可以通过 skip_wait=True 跳过内部等待
             if not skip_wait:
@@ -368,6 +391,19 @@ class AIReplyEngine:
                 max_discount_percent = settings.get('max_discount_percent', 10)
                 max_discount_amount = settings.get('max_discount_amount', 100)
 
+                user_msg_line = f"用户消息：{message}"
+                use_vision = image_url and not self._is_dashscope_api(settings)
+
+                if use_vision:
+                    user_msg_line += """
+（用户同时发送了一张图片，请结合商品信息和对话历史分析图片内容）
+
+请严格按以下格式回复（两行，不要多余内容）：
+###图片描述###：{一句话描述图片与商品的关联，不超过30字}
+###客服回复###：{发给买家的回复内容}"""
+                else:
+                    user_msg_line += "\n\n请根据以上信息生成回复："
+
                 user_prompt = f"""商品信息：
 {item_desc}
 
@@ -380,34 +416,85 @@ class AIReplyEngine:
 - 最大优惠百分比：{max_discount_percent}%
 - 最大优惠金额：{max_discount_amount}元
 
-用户消息：{message}
+{user_msg_line}"""
 
-请根据以上信息生成回复："""
+                # 10. 构建消息并调用AI
+                def _build_user_content(img_url):
+                    return [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": img_url}}
+                    ]
 
-                # 10. 调用AI生成回复
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
-
-                reply = None # 初始化 reply 变量
-
-                if self._is_dashscope_api(settings):
-                    logger.info(f"使用DashScope API生成回复")
-                    reply = self._call_dashscope_api(settings, messages, max_tokens=100, temperature=0.7)
-                
-                elif self._is_gemini_api(settings):
-                    logger.info(f"使用Gemini API生成回复")
-                    reply = self._call_gemini_api(settings, messages, max_tokens=100, temperature=0.7)
-                
+                if use_vision:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": _build_user_content(image_url)}
+                    ]
                 else:
-                    logger.info(f"使用OpenAI兼容API生成回复")
-                    # 修复 P0-2: 调用已修改的无状态客户端创建方法
-                    client = self._create_openai_client(cookie_id)
-                    if not client:
-                        return None
-                    logger.info(f"messages:{messages}")
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ]
+
+                def _call_backend(msgs):
+                    if self._is_dashscope_api(settings):
+                        return self._call_dashscope_api(settings, msgs, max_tokens=150, temperature=0.7)
+                    elif self._is_gemini_api(settings):
+                        return self._call_gemini_api(settings, msgs, max_tokens=150, temperature=0.7)
+                    else:
+                        client = self._create_openai_client(cookie_id)
+                        if not client:
+                            raise Exception("OpenAI客户端创建失败")
+                        logger.info(f"messages:{msgs}")
+                        return self._call_openai_api(client, settings, msgs, max_tokens=150, temperature=0.7)
+
+                raw_reply = None
+                if use_vision:
+                    try:
+                        raw_reply = _call_backend(messages)
+                    except Exception as e:
+                        logger.warning(f"【{cookie_id}】图片URL传递失败，尝试Base64降级: {e}")
+                        try:
+                            b64_url = self._image_url_to_base64_url(image_url)
+                            msgs_b64 = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": _build_user_content(b64_url)}
+                            ]
+                            raw_reply = _call_backend(msgs_b64)
+                        except Exception as e2:
+                            logger.warning(f"【{cookie_id}】Base64也失败，降级纯文字: {e2}")
+                            msgs_text = [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ]
+                            raw_reply = _call_backend(msgs_text)
+                else:
+                    raw_reply = _call_backend(messages)
+
+                # 解析图片描述和客服回复
+                import re
+                image_description = None
+                reply = raw_reply  # 默认整体作为回复（容错）
+
+                if use_vision and raw_reply:
+                    try:
+                        desc_match = re.search(r'###图片描述###[：:]\s*(.+)', raw_reply)
+                        reply_match = re.search(r'###客服回复###[：:]\s*(.+)', raw_reply, re.DOTALL)
+                        if desc_match and reply_match:
+                            image_description = desc_match.group(1).strip()
+                            reply = reply_match.group(1).strip()
+                            logger.info(f"【{cookie_id}】图片描述: {image_description}")
+                        else:
+                            logger.warning(f"【{cookie_id}】图片回复格式解析失败，使用完整回复: {raw_reply[:50]}")
+                    except Exception as e:
+                        logger.warning(f"【{cookie_id}】解析图片回复格式异常: {e}")
+
+                # 更新历史记录中的图片占位符为实际描述
+                if image_description and message_created_at:
+                    db_manager.update_ai_conversation_content(
+                        chat_id, cookie_id, message_created_at,
+                        f"[图片:{image_description}]"
+                    )
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
@@ -430,14 +517,14 @@ class AIReplyEngine:
 
     async def generate_reply_async(self, message: str, item_info: dict, chat_id: str,
                                    cookie_id: str, user_id: str, item_id: str,
-                                   skip_wait: bool = False) -> Optional[str]:
+                                   skip_wait: bool = False, image_url: str = None) -> Optional[str]:
         """
         异步包装器：在独立线程池中执行同步的 `generate_reply`，并返回结果。
         这样可以在异步代码中直接 await，而不阻塞事件循环。
         """
         try:
             import asyncio as _asyncio
-            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait)
+            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait, image_url)
         except Exception as e:
             logger.error(f"异步生成回复失败: {e}")
             return None

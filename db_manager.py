@@ -1926,6 +1926,20 @@ class DBManager:
                     'custom_prompts': ''
                 }
 
+    def update_ai_conversation_content(self, chat_id: str, cookie_id: str,
+                                        created_at: str, new_content: str):
+        """更新对话记录内容（用于图片描述回填）"""
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                UPDATE ai_conversations SET content = ?
+                WHERE chat_id = ? AND cookie_id = ? AND created_at = ?
+                ''', (new_content, chat_id, cookie_id, created_at))
+                self.conn.commit()
+        except Exception as e:
+            logger.error(f"更新对话内容失败: {e}")
+
     def get_all_ai_reply_settings(self) -> Dict[str, dict]:
         """获取所有账号的AI回复设置"""
         with self.lock:
