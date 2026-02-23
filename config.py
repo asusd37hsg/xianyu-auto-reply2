@@ -114,6 +114,7 @@ AUTO_REPLY = config.get('AUTO_REPLY', {
         'timeout': 10
     }
 })
+AI_REPLY_DEBOUNCE_DELAY = config.get('AI_REPLY_DEBOUNCE_DELAY', 1)
 MANUAL_MODE = config.get('MANUAL_MODE', {})
 LOG_CONFIG = config.get('LOG_CONFIG', {}) 
 _cookies_raw = config.get('COOKIES', [])

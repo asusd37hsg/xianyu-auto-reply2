@@ -16,7 +16,7 @@ from config import (
     WEBSOCKET_URL, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
     TOKEN_REFRESH_INTERVAL, TOKEN_RETRY_INTERVAL, COOKIES_STR,
     LOG_CONFIG, AUTO_REPLY, DEFAULT_HEADERS, WEBSOCKET_HEADERS,
-    APP_CONFIG, API_ENDPOINTS
+    APP_CONFIG, API_ENDPOINTS, AI_REPLY_DEBOUNCE_DELAY
 )
 import sys
 import aiohttp
@@ -729,7 +729,7 @@ class XianyuLive:
         # 消息防抖管理器：用于处理用户连续发送消息的情况
         # {chat_id: {'task': asyncio.Task, 'last_message': dict, 'timer': float}}
         self.message_debounce_tasks = {}  # 存储每个chat_id的防抖任务
-        self.message_debounce_delay = 1  # 防抖延迟时间（秒）：用户停止发送消息1秒后才回复
+        self.message_debounce_delay = AI_REPLY_DEBOUNCE_DELAY  # 防抖延迟时间（秒），由global_config.yml的AI_REPLY_DEBOUNCE_DELAY控制
         self.message_debounce_lock = asyncio.Lock()  # 防抖任务管理的锁
         
         # 消息去重机制：防止同一条消息被处理多次
@@ -3428,7 +3428,8 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】更新默认回复图片URL失败: {e}")
 
-    async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str, image_url: str = None):
+    async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str, image_url: str = None,
+                           image_urls=None, message_created_at=None):
         """获取AI回复"""
         try:
             from ai_reply_engine import ai_reply_engine
@@ -3468,7 +3469,9 @@ class XianyuLive:
                 user_id=send_user_id,
                 item_id=item_id,
                 skip_wait=True,  # 跳过内部等待，因为外部已实现防抖
-                image_url=image_url
+                image_url=image_url,
+                image_urls=image_urls,
+                message_created_at=message_created_at,
             )
 
             if reply:
@@ -7208,14 +7211,29 @@ class XianyuLive:
                         del self.processed_message_ids[msg_id]
                     logger.info(f"【{self.cookie_id}】消息ID去重字典过大，已清理 {remove_count} 个最旧记录")
         
+        # 文字消息立即入库（去重通过后即可保存，图片消息在 AI 路径内保存）
+        message_created_at = None
+        if not image_url and send_message:
+            from ai_reply_engine import ai_reply_engine as _engine
+            message_created_at = await asyncio.to_thread(
+                _engine.save_conversation,
+                chat_id, self.cookie_id, send_user_id, item_id, "user", send_message
+            )
+
         async with self.message_debounce_lock:
-            # 如果该chat_id已有防抖任务，取消它
+            # 如果该chat_id已有防抖任务，取消它，并收集已积累的图片
+            pending_images = []
             if chat_id in self.message_debounce_tasks:
-                old_task = self.message_debounce_tasks[chat_id].get('task')
+                old = self.message_debounce_tasks[chat_id]
+                old_task = old.get('task')
                 if old_task and not old_task.done():
                     old_task.cancel()
                     logger.warning(f"【{self.cookie_id}】取消chat_id {chat_id} 的旧防抖任务")
-            
+                # 继承旧任务积累的图片列表
+                pending_images = old.get('pending_images', [])[:]
+                if old['last_message'].get('image_url'):
+                    pending_images.append(old['last_message']['image_url'])
+
             # 更新最后一条消息信息
             current_timer = time.time()
             self.message_debounce_tasks[chat_id] = {
@@ -7227,35 +7245,42 @@ class XianyuLive:
                     'send_message': send_message,
                     'item_id': item_id,
                     'msg_time': msg_time,
-                    'image_url': image_url
+                    'image_url': image_url,
+                    'message_created_at': message_created_at,
                 },
-                'timer': current_timer
+                'timer': current_timer,
+                'pending_images': pending_images,
             }
-            
+
             # 创建新的防抖任务
             async def debounce_task():
                 saved_timer = current_timer  # 保存创建任务时的时间戳
                 try:
                     # 等待防抖延迟时间
                     await asyncio.sleep(self.message_debounce_delay)
-                    
+
                     # 检查是否仍然是最新的消息（防止在等待期间有新消息）
                     async with self.message_debounce_lock:
                         if chat_id not in self.message_debounce_tasks:
                             return
-                        
+
                         debounce_info = self.message_debounce_tasks[chat_id]
                         # 检查时间戳是否匹配（确保这是最新的消息）
                         if saved_timer != debounce_info['timer']:
                             logger.warning(f"【{self.cookie_id}】chat_id {chat_id} 在防抖期间有新消息，跳过旧消息处理")
                             return
-                        
+
                         # 获取最后一条消息
                         last_msg = debounce_info['last_message']
-                        
+
+                        # 合并所有图片URL
+                        all_images = debounce_info.get('pending_images', [])[:]
+                        if last_msg.get('image_url'):
+                            all_images.append(last_msg['image_url'])
+
                         # 从防抖任务中移除
                         del self.message_debounce_tasks[chat_id]
-                    
+
                     # 处理最后一条消息
                     logger.info(f"【{self.cookie_id}】防抖延迟结束，开始处理chat_id {chat_id} 的最后一条消息: {last_msg['send_message'][:30]}...")
                     await self._process_chat_message_reply(
@@ -7267,9 +7292,11 @@ class XianyuLive:
                         last_msg['item_id'],
                         chat_id,
                         last_msg['msg_time'],
-                        last_msg.get('image_url')
+                        last_msg.get('image_url'),
+                        image_urls=all_images or None,
+                        message_created_at=last_msg.get('message_created_at'),
                     )
-                    
+
                 except asyncio.CancelledError:
                     logger.warning(f"【{self.cookie_id}】chat_id {chat_id} 的防抖任务被取消")
                 except Exception as e:
@@ -7278,14 +7305,15 @@ class XianyuLive:
                     async with self.message_debounce_lock:
                         if chat_id in self.message_debounce_tasks:
                             del self.message_debounce_tasks[chat_id]
-            
+
             task = self._create_tracked_task(debounce_task())
             self.message_debounce_tasks[chat_id]['task'] = task
             logger.warning(f"【{self.cookie_id}】为chat_id {chat_id} 创建防抖任务，延迟 {self.message_debounce_delay} 秒")
 
     async def _process_chat_message_reply(self, message_data: dict, websocket, send_user_name: str,
                                          send_user_id: str, send_message: str, item_id: str,
-                                         chat_id: str, msg_time: str, image_url: str = None):
+                                         chat_id: str, msg_time: str, image_url: str = None,
+                                         image_urls=None, message_created_at=None):
         """
         处理聊天消息的回复逻辑（从handle_message中提取出来的核心回复逻辑）
         
@@ -7339,9 +7367,20 @@ class XianyuLive:
                     return
                 elif reply:
                     reply_source = '关键词'  # 标记为关键词回复
+                    # 保存关键词回复到对话历史
+                    if isinstance(reply, str) and reply.startswith("__IMAGE_SEND__"):
+                        _kw_content = "[图片回复]"
+                    else:
+                        _kw_content = reply if isinstance(reply, str) else str(reply)
+                    from ai_reply_engine import ai_reply_engine as _engine
+                    self._create_tracked_task(asyncio.to_thread(
+                        _engine.save_conversation,
+                        chat_id, self.cookie_id, send_user_id, item_id, "assistant", _kw_content
+                    ))
                 else:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
-                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id, image_url=image_url)
+                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id, image_url=image_url,
+                                                    image_urls=image_urls, message_created_at=message_created_at)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
                     else:
@@ -7420,9 +7459,21 @@ class XianyuLive:
                             # 然后发送文字（如果有）
                             if default_text and default_text.strip():
                                 reply = default_text
+                                # 保存默认文字回复到对话历史
+                                from ai_reply_engine import ai_reply_engine as _engine
+                                self._create_tracked_task(asyncio.to_thread(
+                                    _engine.save_conversation,
+                                    chat_id, self.cookie_id, send_user_id, item_id, "assistant", default_text
+                                ))
                             else:
                                 # 只有图片没有文字，已经发送完毕
                                 if default_image_url:
+                                    # 保存图片默认回复占位
+                                    from ai_reply_engine import ai_reply_engine as _engine
+                                    self._create_tracked_task(asyncio.to_thread(
+                                        _engine.save_conversation,
+                                        chat_id, self.cookie_id, send_user_id, item_id, "assistant", "[图片回复]"
+                                    ))
                                     return
                                 reply = None
                         else:
@@ -7759,6 +7810,14 @@ class XianyuLive:
             # 判断消息方向
             if send_user_id == self.myid:
                 logger.info(f"[{msg_time}] 【手动发出】 商品({item_id}): {send_message}")
+
+                # 保存卖家手动回复到对话历史
+                if send_message:
+                    from ai_reply_engine import ai_reply_engine as _engine
+                    self._create_tracked_task(asyncio.to_thread(
+                        _engine.save_conversation,
+                        chat_id, self.cookie_id, send_user_id, item_id, "assistant", send_message
+                    ))
 
                 # 暂停该chat_id的自动回复10分钟
                 pause_manager.pause_chat(chat_id, self.cookie_id)

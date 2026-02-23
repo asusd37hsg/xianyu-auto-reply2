@@ -313,7 +313,8 @@ class AIReplyEngine:
     
     def generate_reply(self, message: str, item_info: dict, chat_id: str,
                       cookie_id: str, user_id: str, item_id: str,
-                      skip_wait: bool = False, image_url: str = None) -> Optional[str]:
+                      skip_wait: bool = False, image_url: str = None,
+                      image_urls=None, message_created_at=None) -> Optional[str]:
         """生成AI回复"""
         if not self.is_ai_enabled(cookie_id):
             return None
@@ -324,8 +325,12 @@ class AIReplyEngine:
             logger.info(f"检测到意图: {intent} (账号: {cookie_id})")
             
             # 在锁外先保存用户消息到数据库，让所有消息都能立即保存
-            user_history_content = "[图片]" if image_url else message
-            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", user_history_content, intent)
+            if message_created_at is None:
+                # 外部未提前入库，此处保存（单图用占位符，多图/纯文字均在此处理）
+                user_history_content = "[图片]" if (image_url or image_urls) else message
+                message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", user_history_content, intent)
+            else:
+                logger.info(f"【{cookie_id}】用户消息已由外部预先入库，跳过重复入库 (时间:{message_created_at})")
             
             # 如果调用方已经实现了去抖（debounce），可以通过 skip_wait=True 跳过内部等待
             if not skip_wait:
@@ -392,7 +397,7 @@ class AIReplyEngine:
                 max_discount_amount = settings.get('max_discount_amount', 100)
 
                 user_msg_line = f"用户消息：{message}"
-                use_vision = image_url and not self._is_dashscope_api(settings)
+                use_vision = bool(image_url or image_urls) and not self._is_dashscope_api(settings)
 
                 if use_vision:
                     user_msg_line += """
@@ -419,6 +424,16 @@ class AIReplyEngine:
 {user_msg_line}"""
 
                 # 10. 构建消息并调用AI
+                # 确定有效图片列表（多图优先，否则退化为单图）
+                effective_images = image_urls if image_urls else ([image_url] if image_url else [])
+                use_vision = bool(effective_images) and not self._is_dashscope_api(settings)
+
+                def _build_user_content_multi(img_urls):
+                    content = [{"type": "text", "text": user_prompt}]
+                    for url in img_urls:
+                        content.append({"type": "image_url", "image_url": {"url": url}})
+                    return content
+
                 def _build_user_content(img_url):
                     return [
                         {"type": "text", "text": user_prompt},
@@ -428,7 +443,7 @@ class AIReplyEngine:
                 if use_vision:
                     messages = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": _build_user_content(image_url)}
+                        {"role": "user", "content": _build_user_content_multi(effective_images)}
                     ]
                 else:
                     messages = [
@@ -455,7 +470,9 @@ class AIReplyEngine:
                     except Exception as e:
                         logger.warning(f"【{cookie_id}】图片URL传递失败，尝试Base64降级: {e}")
                         try:
-                            b64_url = self._image_url_to_base64_url(image_url)
+                            # 多图时只对第一张做base64降级
+                            first_img = effective_images[0] if effective_images else image_url
+                            b64_url = self._image_url_to_base64_url(first_img)
                             msgs_b64 = [
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": _build_user_content(b64_url)}
@@ -490,11 +507,18 @@ class AIReplyEngine:
                         logger.warning(f"【{cookie_id}】解析图片回复格式异常: {e}")
 
                 # 更新历史记录中的图片占位符为实际描述
-                if image_description and message_created_at:
-                    db_manager.update_ai_conversation_content(
-                        chat_id, cookie_id, message_created_at,
-                        f"[图片:{image_description}]"
-                    )
+                is_multi_image = image_urls and len(image_urls) > 1
+                if image_description:
+                    if is_multi_image:
+                        # 多图场景：无占位符记录可回填，直接新增一条描述记录
+                        self.save_conversation(chat_id, cookie_id, user_id, item_id, "user",
+                                               f"[图片:{image_description}]", intent)
+                    elif message_created_at:
+                        # 单图场景：回填占位符
+                        db_manager.update_ai_conversation_content(
+                            chat_id, cookie_id, message_created_at,
+                            f"[图片:{image_description}]"
+                        )
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
@@ -517,14 +541,15 @@ class AIReplyEngine:
 
     async def generate_reply_async(self, message: str, item_info: dict, chat_id: str,
                                    cookie_id: str, user_id: str, item_id: str,
-                                   skip_wait: bool = False, image_url: str = None) -> Optional[str]:
+                                   skip_wait: bool = False, image_url: str = None,
+                                   image_urls=None, message_created_at=None) -> Optional[str]:
         """
         异步包装器：在独立线程池中执行同步的 `generate_reply`，并返回结果。
         这样可以在异步代码中直接 await，而不阻塞事件循环。
         """
         try:
             import asyncio as _asyncio
-            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait, image_url)
+            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait, image_url, image_urls, message_created_at)
         except Exception as e:
             logger.error(f"异步生成回复失败: {e}")
             return None
