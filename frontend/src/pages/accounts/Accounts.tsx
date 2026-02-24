@@ -72,6 +72,7 @@ export function Accounts() {
   const [aiMaxDiscountAmount, setAiMaxDiscountAmount] = useState(100)
   const [aiMaxBargainRounds, setAiMaxBargainRounds] = useState(3)
   const [aiCustomPrompts, setAiCustomPrompts] = useState('')
+  const [aiStyle, setAiStyle] = useState('')
   const [aiContextNote, setAiContextNote] = useState('')
   const [aiSettingsSaving, setAiSettingsSaving] = useState(false)
   const [aiSettingsLoading, setAiSettingsLoading] = useState(false)
@@ -515,7 +516,21 @@ export function Accounts() {
       setAiMaxDiscountPercent(settings.max_discount_percent ?? 10)
       setAiMaxDiscountAmount(settings.max_discount_amount ?? 100)
       setAiMaxBargainRounds(settings.max_bargain_rounds ?? 3)
-      setAiCustomPrompts(settings.custom_prompts ?? '')
+      const rawCustomPrompts = settings.custom_prompts ?? ''
+      if (rawCustomPrompts) {
+        try {
+          const parsed = JSON.parse(rawCustomPrompts)
+          const { style, ...rest } = parsed
+          setAiStyle(style ?? '')
+          setAiCustomPrompts(Object.keys(rest).length > 0 ? JSON.stringify(rest) : '')
+        } catch {
+          setAiStyle('')
+          setAiCustomPrompts(rawCustomPrompts)
+        }
+      } else {
+        setAiStyle('')
+        setAiCustomPrompts('')
+      }
       setAiContextNote(settings.context_note ?? '')
     } catch {
       addToast({ type: 'error', message: '加载AI设置失败' })
@@ -533,7 +548,14 @@ export function Accounts() {
         max_discount_percent: aiMaxDiscountPercent,
         max_discount_amount: aiMaxDiscountAmount,
         max_bargain_rounds: aiMaxBargainRounds,
-        custom_prompts: aiCustomPrompts,
+        custom_prompts: (() => {
+          let base: Record<string, string> = {}
+          if (aiCustomPrompts.trim()) {
+            try { base = JSON.parse(aiCustomPrompts) } catch { /* ignore */ }
+          }
+          if (aiStyle.trim()) base.style = aiStyle.trim()
+          return Object.keys(base).length > 0 ? JSON.stringify(base) : ''
+        })(),
         context_note: aiContextNote,
       })
       // 更新本地状态
@@ -1291,6 +1313,19 @@ export function Accounts() {
                         />
                       </div>
                     </div>
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">说话风格</label>
+                    <textarea
+                      value={aiStyle}
+                      onChange={(e) => setAiStyle(e.target.value)}
+                      className="input-ios h-20 resize-none"
+                      placeholder="描述AI的说话风格，如：语气亲切随意、多用emoji、像大学生说话..."
+                    />
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      追加到所有意图的提示词末尾，留空则不影响默认风格。
+                    </p>
                   </div>
 
                   <div className="input-group">
