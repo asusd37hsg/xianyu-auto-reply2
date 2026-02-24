@@ -547,6 +547,43 @@ class DBManager:
                 cursor.execute("ALTER TABLE item_info ADD COLUMN context_note TEXT DEFAULT ''")
                 logger.info("数据库迁移完成：添加item_info.context_note列")
 
+            # 修复旧版 default_replies 表缺少 id 列的问题
+            cursor.execute("PRAGMA table_info(default_replies)")
+            dr_cols = [row[1] for row in cursor.fetchall()]
+            if 'id' not in dr_cols:
+                logger.info("Migrating default_replies table to add id column...")
+                try:
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS default_replies_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            cookie_id TEXT NOT NULL,
+                            item_id TEXT,
+                            enabled BOOLEAN DEFAULT FALSE,
+                            reply_content TEXT,
+                            reply_image_url TEXT,
+                            reply_once BOOLEAN DEFAULT FALSE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
+                            UNIQUE(cookie_id, item_id)
+                        )
+                    ''')
+                    cursor.execute('''
+                        INSERT INTO default_replies_new
+                            (cookie_id, item_id, enabled, reply_content, reply_image_url, reply_once,
+                             created_at, updated_at)
+                        SELECT cookie_id, item_id, enabled, reply_content, reply_image_url, reply_once,
+                               created_at, updated_at
+                        FROM default_replies
+                    ''')
+                    cursor.execute("DROP TABLE default_replies")
+                    cursor.execute("ALTER TABLE default_replies_new RENAME TO default_replies")
+                    self.conn.commit()
+                    logger.info("default_replies table migrated successfully.")
+                except Exception as e:
+                    logger.error(f"Failed to migrate default_replies table: {e}")
+                    cursor.execute("DROP TABLE IF EXISTS default_replies_new")
+
         except Exception as e:
             logger.error(f"数据库迁移失败: {e}")
             # 迁移失败不应该阻止程序启动
